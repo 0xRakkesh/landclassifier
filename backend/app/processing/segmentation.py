@@ -1,30 +1,84 @@
 """
-Image segmentation module: K-Means and DBSCAN density-based clustering in CIELAB color space.
+High-accuracy K-Means image segmentation module.
+Combines CIELAB color space, Normalized Excess Green (ExG), and Water Absorption Index (WAI)
+with k-means++ centroid initialization for high classification accuracy.
 """
-from typing import Tuple
+from typing import Tuple, Optional
+import cv2
 import numpy as np
-from sklearn.cluster import MiniBatchKMeans, DBSCAN
-from sklearn.neighbors import NearestNeighbors
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+
+def extract_spectral_features(
+    lab_image: np.ndarray,
+    bgr_image: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """
+    Extract multi-dimensional spectral feature representation per pixel:
+    1. L* (Lightness)
+    2. a* (Green-Red chromaticity)
+    3. b* (Blue-Yellow chromaticity)
+    4. ExG (Normalized Excess Green Index = 2G - R - B)
+    5. WAI (Water Absorption Index = (B - R) / (B + R + eps))
+    
+    Returns:
+        (H*W, 5) standardized feature matrix.
+    """
+    h, w, c = lab_image.shape
+    total_pixels = h * w
+
+    if bgr_image is None:
+        bgr_image = cv2.cvtColor(lab_image, cv2.COLOR_LAB2BGR)
+
+    b = bgr_image[:, :, 0].astype(np.float32)
+    g = bgr_image[:, :, 1].astype(np.float32)
+    r = bgr_image[:, :, 2].astype(np.float32)
+
+    L = lab_image[:, :, 0].astype(np.float32)
+    a = lab_image[:, :, 1].astype(np.float32)
+    lab_b = lab_image[:, :, 2].astype(np.float32)
+
+    # 1. Excess Green Index: highlights vegetation
+    exg = (2.0 * g - r - b) / 255.0
+
+    # 2. Water Absorption Index: separates deep water from land
+    wai = (b - r) / (b + r + 1e-4)
+
+    # Combine into (H*W, 5) matrix
+    features = np.column_stack([
+        L.reshape(-1),
+        a.reshape(-1),
+        lab_b.reshape(-1),
+        exg.reshape(-1),
+        wai.reshape(-1),
+    ])
+
+    # Standardize features (zero mean, unit variance) so K-Means weights all spectral indices fairly
+    scaler = StandardScaler()
+    scaled_features = scaler.fit_transform(features)
+
+    return scaled_features
+
 
 def segment_kmeans(
     lab_image: np.ndarray,
+    bgr_image: Optional[np.ndarray] = None,
     n_clusters: int = 5,
     random_state: int = 42,
-    batch_size: int = 2048,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Segment an image using K-Means clustering on CIELAB color features.
+    Segment satellite image using high-precision K-Means with k-means++ seeding.
     
     Args:
         lab_image: (H, W, 3) CIELAB format image array.
+        bgr_image: Optional (H, W, 3) BGR format image array.
         n_clusters: Number of clusters (typically 3, 5, or 7).
-        random_state: Random seed for reproducibility.
-        batch_size: Batch size for MiniBatchKMeans for performance.
+        random_state: Random seed for exact reproducibility.
         
     Returns:
         Tuple of:
             - cluster_labels: (H, W) array with cluster indices [0, n_clusters - 1].
-            - cluster_centers: (n_clusters, 3) cluster centroids in CIELAB space.
+            - cluster_centers_lab: (n_clusters, 3) true cluster centroid coordinates in CIELAB space.
     """
     if not isinstance(lab_image, np.ndarray) or lab_image.ndim != 3 or lab_image.shape[2] != 3:
         raise ValueError("lab_image must be a 3D numpy array with 3 channels.")
@@ -33,106 +87,28 @@ def segment_kmeans(
         raise ValueError(f"n_clusters must be >= 2, got {n_clusters}")
 
     h, w, c = lab_image.shape
-    features = lab_image.reshape(-1, c).astype(np.float32)
+    features = extract_spectral_features(lab_image, bgr_image=bgr_image)
 
-    kmeans = MiniBatchKMeans(
+    # Use exact KMeans with k-means++ initialization for global convergence
+    kmeans = KMeans(
         n_clusters=n_clusters,
+        init="k-means++",
+        n_init=10,
+        max_iter=300,
         random_state=random_state,
-        batch_size=batch_size,
-        n_init=3,
-        max_iter=100,
     )
     labels_1d = kmeans.fit_predict(features)
     cluster_labels = labels_1d.reshape((h, w)).astype(np.int32)
-    cluster_centers = kmeans.cluster_centers_
 
-    return cluster_labels, cluster_centers
+    # Compute actual CIELAB centroids for semantic labeling
+    raw_lab_flat = lab_image.reshape(-1, 3).astype(np.float32)
+    cluster_centers_lab = np.zeros((n_clusters, 3), dtype=np.float32)
 
-
-def segment_dbscan(
-    lab_image: np.ndarray,
-    eps: float = 5.0,
-    min_samples: int = 25,
-    sample_size: int = 6000,
-    random_state: int = 42,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Segment an image using DBSCAN density-based clustering on CIELAB features.
-    Uses representative sub-sampling + Nearest-Neighbors propagation for interactive performance.
-    
-    Args:
-        lab_image: (H, W, 3) CIELAB format image array.
-        eps: Maximum distance between two samples for them to be considered in the same neighborhood.
-        min_samples: Minimum number of samples in a neighborhood for a point to be a core point.
-        sample_size: Number of pixels sampled to fit DBSCAN in real time.
-        random_state: Seed for sampling.
-        
-    Returns:
-        Tuple of:
-            - cluster_labels: (H, W) array with non-negative cluster IDs.
-            - cluster_centers: (K, 3) cluster centroid positions in CIELAB space.
-    """
-    if not isinstance(lab_image, np.ndarray) or lab_image.ndim != 3 or lab_image.shape[2] != 3:
-        raise ValueError("lab_image must be a 3D numpy array with 3 channels.")
-
-    if eps <= 0:
-        raise ValueError(f"eps must be positive, got {eps}")
-    if min_samples < 2:
-        raise ValueError(f"min_samples must be >= 2, got {min_samples}")
-
-    h, w, c = lab_image.shape
-    total_pixels = h * w
-    features = lab_image.reshape(-1, c).astype(np.float32)
-
-    # Subsample for responsive clustering
-    if total_pixels > sample_size:
-        rng = np.random.RandomState(random_state)
-        sample_indices = rng.choice(total_pixels, size=sample_size, replace=False)
-        sub_features = features[sample_indices]
-    else:
-        sub_features = features
-
-    dbscan = DBSCAN(eps=eps, min_samples=min_samples)
-    sub_labels = dbscan.fit_predict(sub_features)
-
-    # Filter distinct non-noise clusters
-    valid_clusters = [lbl for lbl in np.unique(sub_labels) if lbl != -1]
-
-    if not valid_clusters:
-        # Fallback: if everything is noise or uniform, treat whole image as single cluster
-        cluster_labels = np.zeros((h, w), dtype=np.int32)
-        cluster_centers = np.mean(features, axis=0, keepdims=True)
-        return cluster_labels, cluster_centers
-
-    # Map raw cluster IDs to clean 0..K-1
-    lbl_map = {old_lbl: new_lbl for new_lbl, old_lbl in enumerate(sorted(valid_clusters))}
-    
-    # Propagate labels to all image pixels using 1-NN trained on valid core/sample points
-    core_mask = sub_labels != -1
-    X_core = sub_features[core_mask]
-    y_core = np.array([lbl_map[l] for l in sub_labels[core_mask]], dtype=np.int32)
-
-    nn = NearestNeighbors(n_neighbors=1, algorithm="auto").fit(X_core)
-    distances, nn_indices = nn.kneighbors(features)
-    
-    assigned_labels = y_core[nn_indices.ravel()]
-    
-    # Points with very large distance (> eps * 2.5) are marked as noise
-    noise_idx = len(lbl_map) # Next ID for noise / uncertain
-    is_outlier = distances.ravel() > (eps * 2.5)
-    assigned_labels[is_outlier] = noise_idx
-
-    cluster_labels = assigned_labels.reshape((h, w)).astype(np.int32)
-
-    # Compute centroids for each cluster
-    n_total_clusters = noise_idx + (1 if np.any(is_outlier) else 0)
-    cluster_centers = np.zeros((n_total_clusters, 3), dtype=np.float32)
-
-    for cid in range(n_total_clusters):
-        pts = features[assigned_labels == cid]
-        if len(pts) > 0:
-            cluster_centers[cid] = np.mean(pts, axis=0)
+    for k in range(n_clusters):
+        cluster_pixels = raw_lab_flat[labels_1d == k]
+        if len(cluster_pixels) > 0:
+            cluster_centers_lab[k] = np.mean(cluster_pixels, axis=0)
         else:
-            cluster_centers[cid] = np.array([128.0, 128.0, 128.0], dtype=np.float32) # neutral gray
+            cluster_centers_lab[k] = np.array([128.0, 128.0, 128.0], dtype=np.float32)
 
-    return cluster_labels, cluster_centers
+    return cluster_labels, cluster_centers_lab

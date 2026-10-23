@@ -1,6 +1,6 @@
 """
 LandClassifierService: High-level facade for end-to-end land cover classification pipeline.
-Supports both K-Means and DBSCAN clustering algorithms.
+Uses high-precision multi-spectral K-Means clustering and edge-preserving filtering.
 """
 import base64
 import time
@@ -10,7 +10,7 @@ import numpy as np
 
 from backend.app.core.config import settings
 from backend.app.processing.preprocessing import load_image, preprocess_image
-from backend.app.processing.segmentation import segment_kmeans, segment_dbscan
+from backend.app.processing.segmentation import segment_kmeans
 from backend.app.processing.labeling import assign_land_cover_labels
 from backend.app.processing.refinement import refine_mask, generate_colored_mask
 from backend.app.processing.metrics import calculate_area_statistics
@@ -30,26 +30,22 @@ class LandClassifierService:
     def classify(
         cls,
         image_bytes: bytes,
-        algorithm: str = "kmeans",
         n_clusters: int = 5,
-        dbscan_eps: float = 5.0,
-        dbscan_min_samples: int = 25,
         apply_blur: bool = True,
-        blur_kernel: int = 3,
+        blur_kernel: int = 5,
+        use_bilateral: bool = True,
         refine: bool = True,
         refine_kernel: int = 3,
     ) -> Dict[str, Any]:
         """
-        Execute full end-to-end land cover classification pipeline.
+        Execute full end-to-end high-accuracy land cover classification pipeline.
         
         Args:
             image_bytes: Raw uploaded image bytes.
-            algorithm: Clustering algorithm ('kmeans' or 'dbscan').
             n_clusters: Number of clusters for K-Means (e.g. 3, 5, 7).
-            dbscan_eps: Epsilon distance for DBSCAN in CIELAB space.
-            dbscan_min_samples: Minimum core neighborhood samples for DBSCAN.
-            apply_blur: Toggle Gaussian blur.
-            blur_kernel: Odd integer blur kernel size.
+            apply_blur: Toggle noise reduction filter.
+            blur_kernel: Odd integer filter kernel diameter.
+            use_bilateral: True for edge-preserving bilateral filtering, False for Gaussian blur.
             refine: Toggle morphological mask refinement.
             refine_kernel: Odd integer morphological kernel size.
             
@@ -62,31 +58,22 @@ class LandClassifierService:
         raw_bgr = load_image(image_bytes, max_dimension=settings.MAX_IMAGE_DIMENSION)
         orig_h, orig_w = raw_bgr.shape[:2]
 
-        # 2. Preprocess
+        # 2. Preprocess with edge-preserving bilateral filter
         resized_bgr, lab_image = preprocess_image(
             raw_bgr,
             target_size=settings.DEFAULT_IMAGE_SIZE,
             apply_blur=apply_blur,
             blur_kernel=blur_kernel,
+            use_bilateral=use_bilateral,
         )
 
-        # 3. Clustering in CIELAB space
-        algo_clean = algorithm.strip().lower()
-        if algo_clean == "dbscan":
-            cluster_labels_2d, cluster_centers_lab = segment_dbscan(
-                lab_image,
-                eps=dbscan_eps,
-                min_samples=dbscan_min_samples,
-                random_state=42,
-            )
-        elif algo_clean == "kmeans":
-            cluster_labels_2d, cluster_centers_lab = segment_kmeans(
-                lab_image,
-                n_clusters=n_clusters,
-                random_state=42,
-            )
-        else:
-            raise ValueError(f"Unknown algorithm: '{algorithm}'. Supported: 'kmeans', 'dbscan'.")
+        # 3. High-accuracy multi-spectral K-Means (CIELAB + Excess Green + Water Index)
+        cluster_labels_2d, cluster_centers_lab = segment_kmeans(
+            lab_image,
+            bgr_image=resized_bgr,
+            n_clusters=n_clusters,
+            random_state=42,
+        )
 
         # 4. Semantic labelling
         class_mask_2d, cluster_to_class, initial_colored_rgb = assign_land_cover_labels(
@@ -113,7 +100,7 @@ class LandClassifierService:
 
         return {
             "status": "success",
-            "algorithm": algo_clean,
+            "algorithm": "kmeans",
             "processing_time_ms": elapsed_ms,
             "original_dimensions": {"width": orig_w, "height": orig_h},
             "processed_dimensions": {
@@ -121,12 +108,10 @@ class LandClassifierService:
                 "height": settings.DEFAULT_IMAGE_SIZE[1],
             },
             "parameters": {
-                "algorithm": algo_clean,
-                "n_clusters": n_clusters if algo_clean == "kmeans" else len(cluster_centers_lab),
-                "dbscan_eps": dbscan_eps,
-                "dbscan_min_samples": dbscan_min_samples,
+                "n_clusters": n_clusters,
                 "apply_blur": apply_blur,
                 "blur_kernel": blur_kernel,
+                "use_bilateral": use_bilateral,
                 "refine_mask": refine,
                 "refine_kernel": refine_kernel,
             },

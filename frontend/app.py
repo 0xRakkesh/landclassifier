@@ -1,12 +1,11 @@
 """
-Streamlit Web Application for Land Classification.
-Provides an interactive dashboard for satellite image upload, parameter tuning,
-algorithm selection (K-Means vs DBSCAN), side-by-side segmentation visualization,
+Streamlit Web Application for High-Accuracy Land Classification.
+Provides an interactive dashboard for satellite image upload, multi-spectral K-Means parameter tuning,
+edge-preserving bilateral filtering, side-by-side segmentation visualization,
 class area charts, and report downloads.
 """
 import base64
 import io
-import time
 import requests
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -47,12 +46,12 @@ st.markdown("""
 # Application Header
 st.title("🌍 Satellite Land Cover Classification")
 st.markdown("""
-Automated segmentation and classification of satellite imagery using **CIELAB color-space features**, 
-**K-Means clustering / DBSCAN density clustering**, and **morphological mask refinement**.
+High-accuracy land-cover classification using **multi-spectral K-Means (CIELAB + Excess Green + Water Index)**,
+**k-means++ centroid initialization**, and **edge-preserving bilateral filtering**.
 """)
 
 # Sidebar Navigation & Settings
-st.sidebar.header("⚙️ Algorithm & Parameters")
+st.sidebar.header("⚙️ Classification Settings")
 api_url = st.sidebar.text_input("Backend API URL", value="http://localhost:8000")
 
 # Check backend status
@@ -66,53 +65,27 @@ except Exception:
     st.sidebar.info("Backend offline — using Direct Engine mode 🚀")
 
 st.sidebar.markdown("---")
-# Algorithm Selection in Sidebar
-st.sidebar.subheader("🔬 Clustering Algorithm")
-algo_choice = st.sidebar.radio(
-    "Choose Approach:",
-    options=["K-Means (Centroid-based)", "DBSCAN (Density-based)"],
-    index=0,
-    help="K-Means partitions into K spherical clusters. DBSCAN discovers arbitrary-shaped clusters and detects noise.",
+st.sidebar.subheader("🎯 K-Means Hyperparameters")
+n_clusters = st.sidebar.select_slider(
+    "Number of Clusters (K)",
+    options=[3, 5, 7],
+    value=5,
+    help="Higher K captures finer ecological variations across land-cover types.",
 )
 
-algorithm_key = "kmeans" if "K-Means" in algo_choice else "dbscan"
-
-n_clusters = 5
-dbscan_eps = 5.0
-dbscan_min_samples = 25
-
-if algorithm_key == "kmeans":
-    n_clusters = st.sidebar.select_slider(
-        "Number of Clusters (K)",
-        options=[3, 5, 7],
-        value=5,
-        help="Higher K captures finer spectral variations.",
-    )
-else:
-    st.sidebar.markdown("*DBSCAN Parameters in CIELAB Space:*")
-    dbscan_eps = st.sidebar.slider(
-        "Epsilon (ε radius in CIELAB)",
-        min_value=2.0,
-        max_value=18.0,
-        value=5.0,
-        step=0.5,
-        help="Maximum color distance to belong to the same cluster. Lower = more clusters.",
-    )
-    dbscan_min_samples = st.sidebar.slider(
-        "Min Core Samples",
-        min_value=10,
-        max_value=60,
-        value=25,
-        step=5,
-        help="Minimum number of pixels in neighborhood to form a dense core cluster.",
-    )
-
 st.sidebar.markdown("---")
-st.sidebar.subheader("Preprocessing & Morphology")
-apply_blur = st.sidebar.checkbox("Apply Gaussian Blur (Noise Reduction)", value=True)
-blur_kernel = 3
+st.sidebar.subheader("🧹 Filtering & Morphology")
+apply_blur = st.sidebar.checkbox("Enable Noise Reduction", value=True)
+use_bilateral = True
+blur_kernel = 5
+
 if apply_blur:
-    blur_kernel = st.sidebar.selectbox("Blur Kernel Size", options=[3, 5, 7], index=0)
+    use_bilateral = st.sidebar.checkbox(
+        "Use Edge-Preserving Bilateral Filter",
+        value=True,
+        help="Smooths sensor noise while strictly preserving sharp boundaries of rivers, roads, and parcel edges.",
+    )
+    blur_kernel = st.sidebar.selectbox("Filter Diameter / Kernel", options=[3, 5, 7], index=1)
 
 refine_mask = st.sidebar.checkbox("Apply Morphological Refinement", value=True)
 refine_kernel = 3
@@ -127,7 +100,7 @@ classes_legend = [
     ("Water", "#1E90FF", "Rivers, lakes, water bodies"),
     ("Built-up", "#DC143C", "Roads, buildings, concrete"),
     ("Bare soil", "#DAA520", "Exposed dry earth, sand"),
-    ("Other / uncertain", "#808080", "Mixed / ambiguous / DBSCAN noise"),
+    ("Other / uncertain", "#808080", "Mixed / ambiguous regions"),
 ]
 for name, color, desc in classes_legend:
     st.sidebar.markdown(
@@ -151,23 +124,21 @@ if uploaded_file is not None:
     col_info1, col_info2, col_info3 = st.columns(3)
     col_info1.metric("File Name", uploaded_file.name)
     col_info2.metric("Original Dimensions", f"{image.width} × {image.height} px")
-    col_info3.metric("Selected Algorithm", algo_choice)
+    col_info3.metric("Selected Clusters (K)", f"{n_clusters}")
 
     classify_btn = st.button("🚀 Run Classification", type="primary", use_container_width=True)
 
     if classify_btn:
-        with st.spinner(f"Processing with {algo_choice}..."):
+        with st.spinner("Classifying satellite imagery with multi-spectral K-Means..."):
             result_data = None
             try:
                 if backend_healthy:
                     files = {"file": (uploaded_file.name, file_bytes, uploaded_file.type)}
                     params = {
-                        "algorithm": algorithm_key,
                         "n_clusters": n_clusters,
-                        "dbscan_eps": dbscan_eps,
-                        "dbscan_min_samples": dbscan_min_samples,
                         "apply_blur": apply_blur,
                         "blur_kernel": blur_kernel,
+                        "use_bilateral": use_bilateral,
                         "refine_mask": refine_mask,
                         "refine_kernel": refine_kernel,
                     }
@@ -175,28 +146,24 @@ if uploaded_file is not None:
                     if resp.status_code == 200:
                         result_data = resp.json()
                     else:
-                        st.warning(f"Backend returned error ({resp.status_code}), executing with direct engine...")
+                        st.warning(f"Backend error ({resp.status_code}), executing via direct engine...")
                         result_data = LandClassifierService.classify(
                             image_bytes=file_bytes,
-                            algorithm=algorithm_key,
                             n_clusters=n_clusters,
-                            dbscan_eps=dbscan_eps,
-                            dbscan_min_samples=dbscan_min_samples,
                             apply_blur=apply_blur,
                             blur_kernel=blur_kernel,
+                            use_bilateral=use_bilateral,
                             refine=refine_mask,
                             refine_kernel=refine_kernel,
                         )
                 else:
-                    # In-process execution
+                    # Direct in-process execution
                     result_data = LandClassifierService.classify(
                         image_bytes=file_bytes,
-                        algorithm=algorithm_key,
                         n_clusters=n_clusters,
-                        dbscan_eps=dbscan_eps,
-                        dbscan_min_samples=dbscan_min_samples,
                         apply_blur=apply_blur,
                         blur_kernel=blur_kernel,
+                        use_bilateral=use_bilateral,
                         refine=refine_mask,
                         refine_kernel=refine_kernel,
                     )
@@ -204,9 +171,7 @@ if uploaded_file is not None:
                 st.error(f"Classification failed: {str(e)}")
 
             if result_data:
-                st.success(
-                    f"Classification complete in **{result_data['processing_time_ms']} ms** using **{result_data['algorithm'].upper()}**! ✨"
-                )
+                st.success(f"Classification completed in **{result_data['processing_time_ms']} ms**! ✨")
 
                 # Decode result images
                 orig_bytes = base64.b64decode(result_data["original_image_base64"])
@@ -220,11 +185,7 @@ if uploaded_file is not None:
                 with col_left:
                     st.image(orig_img, caption="Preprocessed Satellite Image", use_container_width=True)
                 with col_right:
-                    st.image(
-                        seg_img,
-                        caption=f"Color-Coded Map ({result_data['algorithm'].upper()})",
-                        use_container_width=True,
-                    )
+                    st.image(seg_img, caption=f"Classified Land Cover Map (K={n_clusters})", use_container_width=True)
 
                 st.subheader("3. Land-Cover Area Breakdown")
                 stats = result_data["classes"]
@@ -233,7 +194,7 @@ if uploaded_file is not None:
                 dominant_class = max(stats, key=lambda x: x["percentage"])
                 col_m1, col_m2 = st.columns(2)
                 col_m1.metric("Dominant Land-Cover Class", dominant_class["class_name"], f"{dominant_class['percentage']}%")
-                col_m2.metric("Execution Time", f"{result_data['processing_time_ms']} ms")
+                col_m2.metric("Processing Time", f"{result_data['processing_time_ms']} ms")
 
                 # Charts
                 chart_col1, chart_col2 = st.columns(2)
@@ -247,7 +208,7 @@ if uploaded_file is not None:
                     bars = ax_bar.barh(names, pcts, color=colors, edgecolor="black", linewidth=0.8)
                     ax_bar.set_xlabel("Coverage Percentage (%)")
                     ax_bar.set_xlim(0, 100)
-                    ax_bar.set_title(f"Area Percentage ({result_data['algorithm'].upper()})")
+                    ax_bar.set_title("Class-wise Area Percentage")
                     for bar in bars:
                         width = bar.get_width()
                         ax_bar.text(width + 1, bar.get_y() + bar.get_height() / 2, f"{width:.1f}%", va="center")
@@ -270,7 +231,7 @@ if uploaded_file is not None:
                             wedgeprops={"edgecolor": "white", "linewidth": 1.5},
                         )
                     ax_pie.axis("equal")
-                    ax_pie.set_title(f"Class Distribution ({result_data['algorithm'].upper()})")
+                    ax_pie.set_title("Land Cover Distribution")
                     plt.tight_layout()
                     st.pyplot(fig_pie)
 
@@ -279,9 +240,9 @@ if uploaded_file is not None:
                 d_col1, d_col2 = st.columns(2)
                 with d_col1:
                     st.download_button(
-                        label=f"📥 Download Classified Map ({result_data['algorithm'].upper()}) (PNG)",
+                        label="📥 Download Classified Map (PNG)",
                         data=seg_bytes,
-                        file_name=f"{result_data['algorithm']}_classified_{uploaded_file.name}.png",
+                        file_name=f"kmeans_k{n_clusters}_{uploaded_file.name}.png",
                         mime="image/png",
                         use_container_width=True,
                     )
@@ -290,7 +251,7 @@ if uploaded_file is not None:
                     st.download_button(
                         label="📊 Download Area Statistics (CSV)",
                         data=csv_data,
-                        file_name=f"{result_data['algorithm']}_statistics_{uploaded_file.name}.csv",
+                        file_name=f"kmeans_k{n_clusters}_stats_{uploaded_file.name}.csv",
                         mime="text/csv",
                         use_container_width=True,
                     )

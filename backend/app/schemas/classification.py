@@ -16,10 +16,9 @@ class ClassAreaStat(BaseModel):
 class ClassificationParameters(BaseModel):
     algorithm: str = "kmeans"
     n_clusters: int
-    dbscan_eps: Optional[float] = None
-    dbscan_min_samples: Optional[int] = None
     apply_blur: bool
     blur_kernel: int
+    use_bilateral: bool = True
     refine_mask: bool
     refine_kernel: int
 
