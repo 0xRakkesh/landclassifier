@@ -14,7 +14,10 @@ class ClassAreaStat(BaseModel):
     percentage: float
 
 class ClassificationParameters(BaseModel):
+    algorithm: str = "kmeans"
     n_clusters: int
+    dbscan_eps: Optional[float] = None
+    dbscan_min_samples: Optional[int] = None
     apply_blur: bool
     blur_kernel: int
     refine_mask: bool
@@ -22,6 +25,7 @@ class ClassificationParameters(BaseModel):
 
 class ClassificationResponse(BaseModel):
     status: str = "success"
+    algorithm: str = "kmeans"
     processing_time_ms: float
     original_dimensions: Dimensions
     processed_dimensions: Dimensions

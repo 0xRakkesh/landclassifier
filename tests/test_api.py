@@ -23,14 +23,31 @@ def test_classify_valid_image(client):
     _, encoded = cv2.imencode(".png", img)
     
     files = {"file": ("test.png", encoded.tobytes(), "image/png")}
-    response = client.post("/classify?n_clusters=3", files=files)
+    response = client.post("/classify?algorithm=kmeans&n_clusters=3", files=files)
     
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "success"
+    assert data["algorithm"] == "kmeans"
     assert "classes" in data
     assert "segmented_image_base64" in data
     assert data["parameters"]["n_clusters"] == 3
+
+def test_classify_dbscan_algorithm(client):
+    img = np.zeros((64, 64, 3), dtype=np.uint8)
+    img[:32, :] = (34, 139, 34)
+    img[32:, :] = (200, 80, 20)
+    _, encoded = cv2.imencode(".png", img)
+    
+    files = {"file": ("test.png", encoded.tobytes(), "image/png")}
+    response = client.post("/classify?algorithm=dbscan&dbscan_eps=8.0&dbscan_min_samples=15", files=files)
+    
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "success"
+    assert data["algorithm"] == "dbscan"
+    assert "classes" in data
+    assert "segmented_image_base64" in data
 
 def test_classify_empty_file(client):
     files = {"file": ("empty.png", b"", "image/png")}
