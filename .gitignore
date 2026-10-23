@@ -1,0 +1,38 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.cache/
+
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+
+# Streamlit
+.streamlit/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# Editor configurations
+.vscode/
+.idea/
+*.swp
+*.swo
