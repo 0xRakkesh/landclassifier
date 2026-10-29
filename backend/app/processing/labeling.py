@@ -20,7 +20,7 @@ CLASS_UNCERTAIN = "Other / uncertain"
 
 def classify_centroid_color(lab_center: np.ndarray) -> str:
     """
-    Classify a cluster centroid using physically grounded remote-sensing spectral characteristics:
+    Classify a cluster centroid based on CIELAB and derived RGB/HSV spectral characteristics.
     
     OpenCV CIELAB ranges:
     L: 0..255 (0 = black, 255 = white)
@@ -39,45 +39,41 @@ def classify_centroid_color(lab_center: np.ndarray) -> str:
     r, g, blue = rgb
     hue, sat, val = hsv  # Hue: 0..179, Sat: 0..255, Val: 0..255
 
-    ex_green = 2 * g - r - blue
+    excess_green = 2 * g - r - blue
 
-    # 1. Vegetation:
-    # Distinct green component (positive excess green, green greater than red, and green hue)
-    if (g > r * 1.03 and g > blue * 0.98 and ex_green > 6) or (
-        30 <= hue <= 86 and sat > 30 and g >= r * 0.95
+    # 1. Water bodies:
+    # High optical absorption (low L < 45) or blue dominance (blue > r, cool hue 85-140)
+    if L < 48 or (blue > r * 1.08 and blue >= g * 0.98) or (88 <= hue <= 140 and sat > 20 and L < 110):
+        return CLASS_WATER
+
+    # 2. Bare soil / Dry fields / Sand:
+    # Warm earthy tones (high b* > 136 in LAB), moderate to high lightness, r and g both elevated
+    if (b > 136 and r > 90 and g > 85 and r >= g * 0.90) or (L > 120 and b > 138):
+        return CLASS_BARE_SOIL
+
+    # 3. Built-up / Concrete / Asphalt:
+    # Low saturation (neutral gray / road surfaces) or bright structural surfaces
+    if (sat < 22 and 45 <= L <= 215) or (abs(r - g) < 8 and abs(g - blue) < 8 and sat < 28):
+        return CLASS_BUILT_UP
+
+    # 4. Vegetation:
+    # Noticeable green chroma (a < 118 in LAB), excess green > 15, and green distinctly greater than red
+    if (a < 118 and g > r * 1.05 and g > blue * 1.10 and excess_green > 12) or (
+        35 <= hue <= 85 and sat > 35 and g > r * 1.05
     ):
         return CLASS_VEGETATION
 
-    # 2. Water bodies:
-    # Pure water has very high absorption (deep water: L < 32 and dark RGB),
-    # or clean open water with distinct blue dominance (blue >> red and blue >> green)
-    if (L < 32 and val < 38) or (blue > r * 1.35 and blue > g * 1.12 and L < 80 and sat > 45):
-        return CLASS_WATER
-
-    # 3. Bare soil / Sand / Dry fields:
-    # Warm earthy tones (R > B, G > B, yellow chromaticity b* > 134, warm hue 10..38)
-    if (b > 134 and r > blue * 1.15 and g > blue * 1.02 and 10 <= hue <= 38) or (
-        L > 122 and b > 138 and r >= g * 0.88 and r > blue
-    ):
-        return CLASS_BARE_SOIL
-
-    # 4. Built-up (Urban infrastructure, concrete, asphalt roads, rooftops, railway tracks):
-    # Concrete and asphalt have low-to-moderate saturation or neutral chromaticity across wide lightness
-    if sat < 45 or (35 <= L <= 235 and abs(r - g) < 25 and abs(g - blue) < 25):
-        return CLASS_BUILT_UP
-    if (hue < 18 or hue > 160) and r > 115: # Red roof tiles / brick
-        return CLASS_BUILT_UP
-
-    # 5. Secondary fallbacks
-    if ex_green > 10 and g > r:
+    # 5. Secondary / Fallback heuristics
+    if excess_green > 25 and g > r * 1.10:
         return CLASS_VEGETATION
-    if L < 36 and blue >= r and blue >= g:
-        return CLASS_WATER
-    if b > 135 and r >= blue:
+    if L > 130 and b > 132 and r >= g * 0.88:
         return CLASS_BARE_SOIL
-    if sat < 50:
+    if sat < 32 and 40 <= L <= 220:
         return CLASS_BUILT_UP
+    if blue > r and blue > g:
+        return CLASS_WATER
 
+    # Ambiguous / mixed terrain
     return CLASS_UNCERTAIN
 
 
