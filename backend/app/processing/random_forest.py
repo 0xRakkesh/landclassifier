@@ -46,7 +46,16 @@ def get_model():
     global _MODEL_CACHE
     if _MODEL_CACHE is None:
         if not os.path.exists(MODEL_PATH):
-            raise FileNotFoundError(f"Trained Random Forest model not found at {MODEL_PATH}")
+            remote_url = os.environ.get("MODEL_DOWNLOAD_URL")
+            if remote_url:
+                os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
+                import urllib.request
+                urllib.request.urlretrieve(remote_url, MODEL_PATH)
+            else:
+                raise FileNotFoundError(
+                    f"Trained Random Forest model not found at {MODEL_PATH}. "
+                    "For cloud deployment, upload the model or provide MODEL_DOWNLOAD_URL."
+                )
         _MODEL_CACHE = joblib.load(MODEL_PATH)
     return _MODEL_CACHE
 
