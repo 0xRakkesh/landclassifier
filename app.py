@@ -43,7 +43,7 @@ def predict_land_cover(image):
     return seg_image, coverage
 
 # Create Gradio Blocks Interface
-with gr.Blocks(title="🛰️ Satellite Land-Cover Classifier", theme=gr.themes.Soft()) as demo:
+with gr.Blocks() as demo:
     gr.Markdown("# 🛰️ Satellite Land-Cover Classification System")
     gr.Markdown(
         "Upload any satellite or aerial orthophoto to classify its land cover into "
@@ -65,4 +65,4 @@ with gr.Blocks(title="🛰️ Satellite Land-Cover Classifier", theme=gr.themes.
     )
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(server_name="0.0.0.0", server_port=7860, ssr_mode=False)
