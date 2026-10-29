@@ -30,7 +30,7 @@ def test_classifier_service_end_to_end():
     assert result["processing_time_ms"] > 0
     assert "segmented_image_base64" in result
     assert "original_image_base64" in result
-    assert len(result["classes"]) == 5
+    assert len(result["classes"]) == 6
     
     # Check that area percentages sum to ~100%
     total_pct = sum(c["percentage"] for c in result["classes"])

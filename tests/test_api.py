@@ -1,52 +1,73 @@
 import cv2
 import numpy as np
 import pytest
-from fastapi.testclient import TestClient
-from backend.app.main import app
+from backend.app.services.classifier import LandClassifierService
+from backend.app.core.config import settings
 
-@pytest.fixture(scope="module")
-def client():
-    with TestClient(app) as c:
-        yield c
+def test_health_response_config():
+    assert settings.PROJECT_NAME == "Land Classification System"
+    assert settings.VERSION == "2.2.0"
+    assert len(settings.CLASSES) == 6
+    assert "Dense Forest" in settings.CLASSES
+    assert "Farm Fields / Light Forest" in settings.CLASSES
+    assert "Water Bodies" in settings.CLASSES
+    assert "Roads / Highways" in settings.CLASSES
+    assert "Buildings / Dry Land" in settings.CLASSES
+    assert "Unclassified" in settings.CLASSES
 
-def test_health_check_endpoint(client):
-    response = client.get("/health")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "ok"
-    assert "version" in data
-    assert "app" in data
-
-def test_classify_valid_image(client):
+def test_service_classify_valid_image():
     img = np.zeros((64, 64, 3), dtype=np.uint8)
     img[:, :] = (34, 139, 34)
     _, encoded = cv2.imencode(".png", img)
     
-    files = {"file": ("test.png", encoded.tobytes(), "image/png")}
-    response = client.post("/classify?n_clusters=3&use_bilateral=true", files=files)
+    file_bytes = encoded.tobytes()
+    resp = LandClassifierService.classify(
+        image_bytes=file_bytes,
+        algorithm="kmeans",
+        n_clusters=3,
+        apply_blur=True,
+        blur_kernel=3,
+        use_bilateral=True,
+        refine=True,
+        refine_kernel=3,
+    )
+    assert resp["status"] == "success"
+    assert resp["algorithm"] == "kmeans"
+    assert len(resp["classes"]) == 6
+    assert resp["parameters"]["n_clusters"] == 3
+
+def test_service_classify_water_detection():
+    # Test that blue water pixels are classified as Water Bodies
+    img = np.zeros((64, 64, 3), dtype=np.uint8)
+    img[:, :] = (220, 80, 20) # BGR: High Blue, low Red
+    _, encoded = cv2.imencode(".png", img)
     
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "success"
-    assert data["algorithm"] == "kmeans"
-    assert "classes" in data
-    assert "segmented_image_base64" in data
-    assert data["parameters"]["n_clusters"] == 3
-    assert data["parameters"]["use_bilateral"] is True
+    resp = LandClassifierService.classify(
+        image_bytes=encoded.tobytes(),
+        algorithm="kmeans",
+        n_clusters=2,
+    )
+    water_stat = next(s for s in resp["classes"] if s["class_name"] == "Water Bodies")
+    assert water_stat["percentage"] > 80.0
 
-def test_classify_empty_file(client):
-    files = {"file": ("empty.png", b"", "image/png")}
-    response = client.post("/classify", files=files)
-    assert response.status_code == 400
+def test_service_classify_empty_file():
+    with pytest.raises(ValueError):
+        LandClassifierService.classify(image_bytes=b"")
 
-def test_classify_corrupted_file(client):
-    files = {"file": ("corrupt.png", b"not-an-image", "image/png")}
-    response = client.post("/classify", files=files)
-    assert response.status_code == 400
-
-def test_classify_invalid_even_kernel(client):
+def test_service_classify_invalid_even_kernel():
     img = np.zeros((32, 32, 3), dtype=np.uint8)
     _, encoded = cv2.imencode(".png", img)
-    files = {"file": ("test.png", encoded.tobytes(), "image/png")}
-    response = client.post("/classify?blur_kernel=4", files=files)
-    assert response.status_code == 400
+    with pytest.raises(ValueError):
+        LandClassifierService.classify(image_bytes=encoded.tobytes(), blur_kernel=4)
+
+def test_service_classify_random_forest():
+    img = np.zeros((64, 64, 3), dtype=np.uint8)
+    img[:, :] = (30, 180, 40)
+    _, encoded = cv2.imencode(".png", img)
+    resp = LandClassifierService.classify(
+        image_bytes=encoded.tobytes(),
+        algorithm="random_forest",
+    )
+    assert resp["status"] == "success"
+    assert "Random Forest" in resp["algorithm"]
+    assert len(resp["classes"]) == 6

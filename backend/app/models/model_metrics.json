@@ -1,0 +1,55 @@
+{
+  "model_name": "Supervised Random Forest (LandCover.ai)",
+  "train_set_size": 9092,
+  "test_set_size": 2274,
+  "overall_accuracy": 75.63,
+  "macro_precision": 59.48,
+  "macro_recall": 68.55,
+  "macro_f1": 61.41,
+  "mean_iou": 46.91,
+  "per_class": {
+    "Farm Fields / Light Forest": {
+      "class_id": 0,
+      "precision": 87.54,
+      "recall": 74.05,
+      "iou": 66.99,
+      "support": 30404456
+    },
+    "Buildings / Dry Land": {
+      "class_id": 1,
+      "precision": 47.52,
+      "recall": 53.5,
+      "iou": 33.63,
+      "support": 460844
+    },
+    "Dense Forest": {
+      "class_id": 2,
+      "precision": 69.35,
+      "recall": 80.74,
+      "iou": 59.5,
+      "support": 15592280
+    },
+    "Water Bodies": {
+      "class_id": 3,
+      "precision": 74.34,
+      "recall": 71.98,
+      "iou": 57.66,
+      "support": 2627343
+    },
+    "Roads / Highways": {
+      "class_id": 4,
+      "precision": 18.66,
+      "recall": 62.47,
+      "iou": 16.78,
+      "support": 915077
+    }
+  },
+  "features": [
+    "CIELAB (L, a, b)",
+    "Excess Green Index (ExG)",
+    "Water Absorption Index (WAI)",
+    "Sobel Gradient Magnitude",
+    "9x9 Texture Roughness",
+    "Directional Line Detectors"
+  ]
+}

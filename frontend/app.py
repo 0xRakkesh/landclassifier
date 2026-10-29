@@ -1,259 +1,135 @@
 """
-Streamlit Web Application for High-Accuracy Land Classification.
-Provides an interactive dashboard for satellite image upload, multi-spectral K-Means parameter tuning,
-edge-preserving bilateral filtering, side-by-side segmentation visualization,
-class area charts, and report downloads.
+Satellite Land-Cover Classification System - Streamlit Web Application
+Minimalist, high-performance UI dedicated strictly to classification.
 """
-import base64
 import io
-import requests
+import os
+import base64
 import streamlit as st
-import matplotlib.pyplot as plt
-import pandas as pd
 from PIL import Image
 
-# Direct processing service fallback
 from backend.app.services.classifier import LandClassifierService
 
 st.set_page_config(
-    page_title="Satellite Land Classifier",
-    page_icon="🌍",
+    page_title="Satellite Land-Cover Classifier",
+    page_icon="🛰️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# Custom Styling
+# Custom CSS for clean aesthetics
 st.markdown("""
 <style>
-    .metric-card {
-        background-color: #f8f9fa;
-        border-radius: 8px;
-        padding: 12px;
-        border-left: 5px solid #228b22;
-        margin-bottom: 10px;
-    }
     .legend-box {
         display: inline-block;
-        width: 16px;
-        height: 16px;
+        width: 14px;
+        height: 14px;
         margin-right: 8px;
         border-radius: 3px;
         vertical-align: middle;
     }
+    .main-header {
+        margin-bottom: 8px;
+    }
+    .badge-bar {
+        background-color: #1e293b;
+        border: 1px solid #334155;
+        border-radius: 8px;
+        padding: 10px 16px;
+        margin-bottom: 20px;
+        display: flex;
+        gap: 24px;
+        font-size: 14px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# Application Header
-st.title("🌍 Satellite Land Cover Classification")
-st.markdown("""
-High-accuracy land-cover classification using **multi-spectral K-Means (CIELAB + Excess Green + Water Index)**,
-**k-means++ centroid initialization**, and **edge-preserving bilateral filtering**.
-""")
+st.title("🛰️ Satellite Land-Cover Classification")
 
-# Sidebar Navigation & Settings
-st.sidebar.header("⚙️ Classification Settings")
-api_url = st.sidebar.text_input("Backend API URL", value="http://localhost:8000")
+# Minimalist model benchmark badge
+bench = LandClassifierService.get_benchmark_metrics()
+acc = bench.get("overall_accuracy", 75.63)
+prec = bench.get("macro_precision", 59.48)
+miou = bench.get("mean_iou", 46.91)
 
-# Check backend status
-backend_healthy = False
-try:
-    health_resp = requests.get(f"{api_url}/health", timeout=1.0)
-    if health_resp.status_code == 200:
-        backend_healthy = True
-        st.sidebar.success("Backend API Connected ✅")
-except Exception:
-    st.sidebar.info("Backend offline — using Direct Engine mode 🚀")
+st.markdown(f"""
+<div class="badge-bar">
+    <span>🌲 <b>Model:</b> Supervised Random Forest</span>
+    <span>🎯 <b>Test Accuracy:</b> <b style="color: #4ade80;">{acc:.1f}%</b></span>
+    <span>🔍 <b>Macro Precision:</b> <b style="color: #60a5fa;">{prec:.1f}%</b></span>
+    <span>📐 <b>mIoU:</b> <b style="color: #a78bfa;">{miou:.1f}%</b></span>
+</div>
+""", unsafe_allow_html=True)
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("🎯 K-Means Hyperparameters")
-n_clusters = st.sidebar.select_slider(
-    "Number of Clusters (K)",
-    options=[3, 5, 7],
-    value=5,
-    help="Higher K captures finer ecological variations across land-cover types.",
-)
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("🧹 Filtering & Morphology")
-apply_blur = st.sidebar.checkbox("Enable Noise Reduction", value=True)
-use_bilateral = True
-blur_kernel = 5
-
-if apply_blur:
-    use_bilateral = st.sidebar.checkbox(
-        "Use Edge-Preserving Bilateral Filter",
-        value=True,
-        help="Smooths sensor noise while strictly preserving sharp boundaries of rivers, roads, and parcel edges.",
-    )
-    blur_kernel = st.sidebar.selectbox("Filter Diameter / Kernel", options=[3, 5, 7], index=1)
-
-refine_mask = st.sidebar.checkbox("Apply Morphological Refinement", value=True)
-refine_kernel = 3
-if refine_mask:
-    refine_kernel = st.sidebar.selectbox("Refinement Kernel Size", options=[3, 5, 7], index=0)
-
-# Color Legend in Sidebar
-st.sidebar.markdown("---")
+# Sidebar Color Legend ONLY
 st.sidebar.subheader("🎨 Land-Cover Classes")
 classes_legend = [
-    ("Vegetation", "#228B22", "Crops, forests, grasslands"),
-    ("Water", "#1E90FF", "Rivers, lakes, water bodies"),
-    ("Built-up", "#DC143C", "Roads, buildings, concrete"),
-    ("Bare soil", "#DAA520", "Exposed dry earth, sand"),
-    ("Other / uncertain", "#808080", "Mixed / ambiguous regions"),
+    ("#006400", "Deep Green", "Dense Forest"),
+    ("#22C55E", "Light Green", "Farm Fields & Pastures"),
+    ("#1E90FF", "Blue", "Water Bodies"),
+    ("#FFD700", "Yellow", "Buildings, Roads & Dry Land"),
+    ("#808080", "Grey", "Shadows / Unclassified"),
 ]
-for name, color, desc in classes_legend:
+for hex_color, color_name, symbolizes in classes_legend:
     st.sidebar.markdown(
-        f'<div style="font-size: 13px; margin-bottom: 4px;">'
-        f'<span class="legend-box" style="background-color: {color};"></span>'
-        f'<b>{name}</b>: {desc}</div>',
+        f'<div style="font-size: 14px; margin-bottom: 10px; display: flex; align-items: center;">'
+        f'<span class="legend-box" style="background-color: {hex_color};"></span>'
+        f'<b>{color_name}</b>&nbsp;→&nbsp;<span>{symbolizes}</span></div>',
         unsafe_allow_html=True,
     )
 
 # File Uploader
-st.subheader("1. Upload Satellite Image")
 uploaded_file = st.file_uploader(
-    "Choose a satellite image file (PNG, JPG, JPEG, TIFF)",
+    "Choose a satellite image (PNG, JPG, TIFF)",
     type=["png", "jpg", "jpeg", "tif", "tiff"],
+    help="Upload a satellite orthophoto tile to classify its land cover.",
 )
 
 if uploaded_file is not None:
     file_bytes = uploaded_file.getvalue()
-    image = Image.open(io.BytesIO(file_bytes))
-    
-    col_info1, col_info2, col_info3 = st.columns(3)
-    col_info1.metric("File Name", uploaded_file.name)
-    col_info2.metric("Original Dimensions", f"{image.width} × {image.height} px")
-    col_info3.metric("Selected Clusters (K)", f"{n_clusters}")
+    file_name = uploaded_file.name
 
-    classify_btn = st.button("🚀 Run Classification", type="primary", use_container_width=True)
+    # Preview and Classify
+    classify_btn = st.button("🚀 Classify Land Cover", type="primary", use_container_width=True)
 
     if classify_btn:
-        with st.spinner("Classifying satellite imagery with multi-spectral K-Means..."):
-            result_data = None
-            try:
-                if backend_healthy:
-                    files = {"file": (uploaded_file.name, file_bytes, uploaded_file.type)}
-                    params = {
-                        "n_clusters": n_clusters,
-                        "apply_blur": apply_blur,
-                        "blur_kernel": blur_kernel,
-                        "use_bilateral": use_bilateral,
-                        "refine_mask": refine_mask,
-                        "refine_kernel": refine_kernel,
-                    }
-                    resp = requests.post(f"{api_url}/classify", files=files, params=params, timeout=40)
-                    if resp.status_code == 200:
-                        result_data = resp.json()
-                    else:
-                        st.warning(f"Backend error ({resp.status_code}), executing via direct engine...")
-                        result_data = LandClassifierService.classify(
-                            image_bytes=file_bytes,
-                            n_clusters=n_clusters,
-                            apply_blur=apply_blur,
-                            blur_kernel=blur_kernel,
-                            use_bilateral=use_bilateral,
-                            refine=refine_mask,
-                            refine_kernel=refine_kernel,
-                        )
-                else:
-                    # Direct in-process execution
-                    result_data = LandClassifierService.classify(
-                        image_bytes=file_bytes,
-                        n_clusters=n_clusters,
-                        apply_blur=apply_blur,
-                        blur_kernel=blur_kernel,
-                        use_bilateral=use_bilateral,
-                        refine=refine_mask,
-                        refine_kernel=refine_kernel,
-                    )
-            except Exception as e:
-                st.error(f"Classification failed: {str(e)}")
+        with st.spinner("Classifying land-cover pixels..."):
+            result = LandClassifierService.classify(
+                image_bytes=file_bytes,
+                file_name=file_name,
+                algorithm="random_forest",
+                apply_blur=True,
+                blur_kernel=5,
+                use_bilateral=True,
+                refine=True,
+                refine_kernel=3,
+            )
 
-            if result_data:
-                st.success(f"Classification completed in **{result_data['processing_time_ms']} ms**! ✨")
+            orig_bytes = base64.b64decode(result["original_image_base64"])
+            seg_bytes = base64.b64decode(result["segmented_image_base64"])
+            orig_img = Image.open(io.BytesIO(orig_bytes))
+            seg_img = Image.open(io.BytesIO(seg_bytes))
 
-                # Decode result images
-                orig_bytes = base64.b64decode(result_data["original_image_base64"])
-                seg_bytes = base64.b64decode(result_data["segmented_image_base64"])
-                
-                orig_img = Image.open(io.BytesIO(orig_bytes))
-                seg_img = Image.open(io.BytesIO(seg_bytes))
+            # Visual Display Side by Side
+            st.subheader("Classification Results")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.image(orig_img, caption="Satellite Image", use_container_width=True)
+            with col2:
+                st.image(seg_img, caption=f"Classified Land Cover ({result['processing_time_ms']} ms)", use_container_width=True)
 
-                st.subheader("2. Visual Comparison")
-                col_left, col_right = st.columns(2)
-                with col_left:
-                    st.image(orig_img, caption="Preprocessed Satellite Image", use_container_width=True)
-                with col_right:
-                    st.image(seg_img, caption=f"Classified Land Cover Map (K={n_clusters})", use_container_width=True)
-
-                st.subheader("3. Land-Cover Area Breakdown")
-                stats = result_data["classes"]
-                df_stats = pd.DataFrame(stats)
-                
-                dominant_class = max(stats, key=lambda x: x["percentage"])
-                col_m1, col_m2 = st.columns(2)
-                col_m1.metric("Dominant Land-Cover Class", dominant_class["class_name"], f"{dominant_class['percentage']}%")
-                col_m2.metric("Processing Time", f"{result_data['processing_time_ms']} ms")
-
-                # Charts
-                chart_col1, chart_col2 = st.columns(2)
-
-                with chart_col1:
-                    fig_bar, ax_bar = plt.subplots(figsize=(6, 4))
-                    names = [s["class_name"] for s in stats]
-                    pcts = [s["percentage"] for s in stats]
-                    colors = [s["color_hex"] for s in stats]
-                    
-                    bars = ax_bar.barh(names, pcts, color=colors, edgecolor="black", linewidth=0.8)
-                    ax_bar.set_xlabel("Coverage Percentage (%)")
-                    ax_bar.set_xlim(0, 100)
-                    ax_bar.set_title("Class-wise Area Percentage")
-                    for bar in bars:
-                        width = bar.get_width()
-                        ax_bar.text(width + 1, bar.get_y() + bar.get_height() / 2, f"{width:.1f}%", va="center")
-                    plt.tight_layout()
-                    st.pyplot(fig_bar)
-
-                with chart_col2:
-                    fig_pie, ax_pie = plt.subplots(figsize=(5, 4))
-                    non_zero = [s for s in stats if s["percentage"] > 0]
-                    if non_zero:
-                        pie_pcts = [s["percentage"] for s in non_zero]
-                        pie_labels = [s["class_name"] for s in non_zero]
-                        pie_colors = [s["color_hex"] for s in non_zero]
-                        ax_pie.pie(
-                            pie_pcts,
-                            labels=pie_labels,
-                            colors=pie_colors,
-                            autopct="%1.1f%%",
-                            startangle=140,
-                            wedgeprops={"edgecolor": "white", "linewidth": 1.5},
-                        )
-                    ax_pie.axis("equal")
-                    ax_pie.set_title("Land Cover Distribution")
-                    plt.tight_layout()
-                    st.pyplot(fig_pie)
-
-                # Export Options
-                st.subheader("4. Export Results")
-                d_col1, d_col2 = st.columns(2)
-                with d_col1:
-                    st.download_button(
-                        label="📥 Download Classified Map (PNG)",
-                        data=seg_bytes,
-                        file_name=f"kmeans_k{n_clusters}_{uploaded_file.name}.png",
-                        mime="image/png",
-                        use_container_width=True,
-                    )
-                with d_col2:
-                    csv_data = df_stats[["class_id", "class_name", "pixel_count", "percentage"]].to_csv(index=False)
-                    st.download_button(
-                        label="📊 Download Area Statistics (CSV)",
-                        data=csv_data,
-                        file_name=f"kmeans_k{n_clusters}_stats_{uploaded_file.name}.csv",
-                        mime="text/csv",
-                        use_container_width=True,
-                    )
-else:
-    st.info("👆 Upload a satellite image above to begin classification.")
+            # Coverage Distribution
+            st.markdown("---")
+            st.subheader("Land-Cover Distribution")
+            area_rows = []
+            for s in result["classes"]:
+                area_rows.append({
+                    "Class": s["class_name"],
+                    "Coverage": f"{s['percentage']:.2f}%",
+                    "Pixels": f"{s['pixel_count']:,}",
+                })
+            st.dataframe(area_rows, use_container_width=True)
+    else:
+        # Just show the uploaded image preview before clicking classify
+        img_preview = Image.open(io.BytesIO(file_bytes))
+        st.image(img_preview, caption=f"Uploaded: {file_name} ({img_preview.width}×{img_preview.height} px)", width=400)

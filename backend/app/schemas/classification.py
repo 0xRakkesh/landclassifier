@@ -14,25 +14,35 @@ class ClassAreaStat(BaseModel):
     percentage: float
 
 class ClassificationParameters(BaseModel):
-    algorithm: str = "kmeans"
-    n_clusters: int
-    apply_blur: bool
-    blur_kernel: int
+    algorithm: str = "random_forest"
+    n_clusters: int = 5
+    apply_blur: bool = True
+    blur_kernel: int = 5
     use_bilateral: bool = True
-    refine_mask: bool
-    refine_kernel: int
+    refine_mask: bool = True
+    refine_kernel: int = 3
+
+class EvaluationMetrics(BaseModel):
+    has_ground_truth: bool = False
+    accuracy: Optional[float] = None
+    precision: Optional[float] = None
+    recall: Optional[float] = None
+    f1_score: Optional[float] = None
+    mean_iou: Optional[float] = None
+    per_class: Optional[Dict[str, Any]] = None
 
 class ClassificationResponse(BaseModel):
     status: str = "success"
-    algorithm: str = "kmeans"
+    algorithm: str = "random_forest"
     processing_time_ms: float
     original_dimensions: Dimensions
     processed_dimensions: Dimensions
     parameters: ClassificationParameters
-    cluster_mapping: Dict[str, str]
+    cluster_mapping: Dict[str, str] = Field(default_factory=dict)
     classes: List[ClassAreaStat]
     original_image_base64: str
     segmented_image_base64: str
+    evaluation: Optional[EvaluationMetrics] = None
 
 class HealthResponse(BaseModel):
     status: str = "ok"

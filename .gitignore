@@ -3,7 +3,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Caches
+# Caches & Test artifacts
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
@@ -20,7 +20,7 @@ ENV/
 # Streamlit
 .streamlit/
 
-# Distribution / packaging
+# Distribution & packaging
 build/
 dist/
 *.egg-info/
@@ -36,3 +36,24 @@ ehthumbs.db
 .idea/
 *.swp
 *.swo
+
+# Datasets and Large Imagery
+data/
+data/**
+*.tif
+*.tiff
+outputs/
+*.log
+scripts/*.png
+scripts/*.jpg
+
+# Model Weights and Large Binaries
+*.joblib
+*.pkl
+*.pickle
+*.h5
+*.pt
+*.pth
+*.onnx
+backend/app/models/*.joblib
+!backend/app/models/model_metrics.json
