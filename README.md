@@ -1,14 +1,3 @@
----
-title: Satellite Land Classifier
-emoji: 🛰️
-colorFrom: green
-colorTo: blue
-sdk: gradio
-sdk_version: 4.44.1
-app_file: app.py
-pinned: false
-license: mit
----
 
 # 🛰️ Satellite Land-Cover Classification System
 ### *An Industrial-Grade Remote Sensing & Semantic Land-Cover Segmentation Pipeline*
