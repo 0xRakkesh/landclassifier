@@ -9,9 +9,15 @@ import cv2
 from PIL import Image
 import gradio as gr
 
+try:
+    import spaces
+    HAS_SPACES = True
+except ImportError:
+    HAS_SPACES = False
+
 from backend.app.services.classifier import LandClassifierService
 
-def predict_land_cover(image):
+def _predict(image):
     if image is None:
         return None, {}
 
@@ -41,6 +47,12 @@ def predict_land_cover(image):
     coverage = {s["class_name"]: round(s["percentage"] / 100.0, 4) for s in result["classes"]}
 
     return seg_image, coverage
+
+# Apply ZeroGPU decorator if running on Hugging Face Spaces
+if HAS_SPACES:
+    predict_land_cover = spaces.GPU(_predict)
+else:
+    predict_land_cover = _predict
 
 # Create Gradio Blocks Interface
 with gr.Blocks() as demo:
