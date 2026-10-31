@@ -1,259 +1,354 @@
+# LandClassifier
 
-# 🛰️ Satellite Land-Cover Classification System
-### *An Industrial-Grade Remote Sensing & Semantic Land-Cover Segmentation Pipeline*
+## A practical guide to satellite land-cover classification
 
-[![Python Version](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-009688.svg)](https://fastapi.tiangolo.com)
-[![Streamlit](https://img.shields.io/badge/Streamlit-1.32%2B-FF4B4B.svg)](https://streamlit.io)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+LandClassifier turns an aerial or satellite image into a semantic land-cover map. Instead of returning only a label for an entire image, it classifies pixels and produces a color-coded mask showing vegetation, water, built-up areas, roads, and uncertain regions.
 
----
+The project is intentionally built from explainable computer-vision and classical machine-learning components:
 
-## 📌 Executive Summary & Abstract
+1. The input image is decoded, validated, resized, and optionally denoised.
+2. Eight spectral, textural, edge, and directional features are calculated for every pixel.
+3. A supervised Random Forest model predicts the LandCover.ai class for each pixel.
+4. Dataset labels are translated into the application's semantic classes.
+5. Optional morphological refinement removes isolated noise and fills small gaps.
+6. The result is returned as a PNG mask together with coverage statistics and optional evaluation metrics.
 
-Accurate automated mapping of land cover from aerial and satellite orthophotography is essential for environmental monitoring, precision agriculture, forestry conservation, infrastructure inventory, and disaster response. While deep neural networks (CNNs) achieve strong performance, they require intensive GPU resources, opaque weight interpretability, and significant inference latency.
+The repository includes both a browser interface and an HTTP API:
 
-This project delivers a **high-throughput, explainable machine learning system** for multi-spectral land-cover classification. Powered by an ensemble **Supervised Random Forest** engine, the system extracts **8 mathematical multi-spectral, textural, and directional gradient features** per pixel. The model was trained on **31.2 million pixels** sampled across 9,092 orthophoto tiles from the benchmark **LandCover.ai** dataset and rigorously tested on an unseen 20% evaluation partition (**50.0 million test pixels** across 2,274 tiles). 
+| Interface | Entry point | Best for |
+| --- | --- | --- |
+| Streamlit | `frontend/app.py` | Interactive local analysis |
+| Gradio | `app.py` | A shareable demo or hosted application |
+| FastAPI | `backend.app.main:app` | Scripts, services, and batch workflows |
 
-To ensure clean, interpretable visual maps for human decision-makers, man-made infrastructure (**roads, highways, buildings, and dry cleared land**) is unified into an intuitive **Yellow (`#FFD700`)** visual class, completely eliminating ambiguous black artifacts. The system is deployed with a sub-second **Streamlit Web Application** for interactive analysis and an asynchronous **FastAPI REST API** for automated batch pipelines.
+## Table of contents
 
----
+- [What the classifier recognizes](#what-the-classifier-recognizes)
+- [How the pipeline works](#how-the-pipeline-works)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Model weights](#model-weights)
+- [Running the applications](#running-the-applications)
+- [Using the REST API](#using-the-rest-api)
+- [Understanding the output](#understanding-the-output)
+- [Feature engineering](#feature-engineering)
+- [Configuration](#configuration)
+- [Evaluation](#evaluation)
+- [Development and testing](#development-and-testing)
+- [Repository guide](#repository-guide)
+- [Troubleshooting](#troubleshooting)
+- [Limitations and roadmap](#limitations-and-roadmap)
+- [License](#license)
 
-## 🏗️ End-to-End System Architecture
+## What the classifier recognizes
 
-The following diagram illustrates the complete dataflow from raw satellite orthophotography to segmented land-cover maps:
+The output uses a fixed application palette. Roads and buildings intentionally share the same yellow visualization color, because both represent impervious or developed land in the final map.
 
-```mermaid
-flowchart TD
-    A["Raw Satellite Orthophoto (PNG, JPG, TIFF)"] --> B["Image Ingestion & Dimension Normalization"]
-    B --> C["Edge-Preserving Bilateral Filter (Sensor Noise Reduction)"]
-    C --> D["CIELAB Color Space Conversion"]
-    
-    subgraph Feature_Engineering ["8-Dimensional Feature Extraction"]
-        D --> F1["CIELAB Lightness (L*) & Chromaticity (a*, b*)"]
-        C --> F2["Excess Green Index (ExG = 2G - R - B)"]
-        C --> F3["Water Absorption Index (WAI = (B - R) / (B + R))"]
-        C --> F4["Sobel Edge Gradient Magnitude"]
-        C --> F5["9x9 Moving-Window Texture Roughness (Std Dev)"]
-        C --> F6["Directional Line Detectors (0°, 90°, 45°, 135°)"]
-    end
-    
-    F1 & F2 & F3 & F4 & F5 & F6 --> G["Pixel Feature Matrix (N x 8)"]
-    G --> H["Supervised Random Forest Classifier (100 Trees)"]
-    H --> I["Raw Pixel Class Predictions"]
-    I --> J["Unified ID Mapping (Roads + Buildings -> Yellow)"]
-    J --> K["Morphological Median & Closing Refinement"]
-    K --> L["RGB Semantic Land-Cover Map"]
-    K --> M["Coverage Percentage & Area Statistics"]
-    
-    L & M --> N["Streamlit Web UI / FastAPI JSON Response"]
-```
+| Application ID | Class | Color | Meaning |
+| ---: | --- | --- | --- |
+| 1 | Dense Forest | `#006400` | Dense canopy and thick forest |
+| 2 | Farm Fields / Light Forest | `#22C55E` | Crops, fields, pastures, and lighter vegetation |
+| 3 | Water Bodies | `#1E90FF` | Rivers, lakes, reservoirs, ponds, and canals |
+| 4 | Roads / Highways | `#FFD700` | Roads, highways, paved paths, and runways |
+| 5 | Buildings / Dry Land | `#FFD700` | Buildings, roofs, concrete, bare soil, and sand |
+| 6 | Unclassified | `#808080` | Shadows, mixed terrain, or ambiguous regions |
 
----
+Although classes 4 and 5 retain separate IDs in the configuration, both are rendered with `#FFD700`. The trained model maps the LandCover.ai road label into the same application output group as buildings and dry land.
 
-## 📊 Dataset Engineering & In-Place Tiling
+## How the pipeline works
 
-The system is trained on aerial orthophotos from the **LandCover.ai** benchmark, covering rural and urban territories across Poland at $25\text{ cm}$ and $50\text{ cm}$ spatial resolutions.
+### 1. Image preparation
 
-### 1. In-Place $500 \times 500$ Non-Overlapping Tiling
-Original satellite orthophotos are massive individual `.tif` files ($9000 \times 9000$ to $10000 \times 10000$ pixels, ~85 MB each). Attempting to load and process full-resolution rasters directly causes high memory decompression overhead (243 MB RAM per image) and 8–12 second browser upload lag.
+Images are read from bytes with OpenCV. The original dimensions are retained for reporting, while inference uses the configured processing size of `512 × 512` pixels. A bilateral filter can be applied to reduce noise while preserving boundaries.
 
-To solve this, an automated tiled pipeline sliced all 41 orthophoto-mask pairs into non-overlapping $500 \times 500$ pixel tiles:
-- **Total Tiles Generated**: **11,366 PNG image tiles** (`data/images/`) and **11,366 ground-truth mask tiles** (`data/masks/`).
-- **File Format**: Lightweight lossless 8-bit PNG (~300 KB per tile).
-- **Inference Latency**: Drops from **~9.5 seconds to 0.18 seconds** per tile (over **50× speedup**).
+### 2. Feature extraction
 
-### 2. Strict 80 / 20 Train-Test Partitioning
-The dataset is cleanly divided to guarantee that evaluation tiles are completely unseen during training:
-- **`data/train.txt` (80.0%)**: **9,092 tiles** used exclusively for feature extraction and Random Forest ensemble calibration.
-- **`data/test.txt` (20.0%)**: **2,274 tiles** reserved exclusively for test-set evaluation and benchmark reporting.
+For each processed pixel, the classifier creates an eight-value feature vector:
 
----
+| Feature | Purpose |
+| --- | --- |
+| CIELAB `L*` | Separates bright and dark surfaces |
+| CIELAB `a*` | Captures the green-to-red color axis |
+| CIELAB `b*` | Captures the blue-to-yellow color axis |
+| Excess Green (`ExG`) | Highlights vegetation in RGB imagery |
+| Water Absorption Index (`WAI`) | Uses blue/red contrast to support water detection |
+| Sobel edge magnitude | Identifies boundaries and structural edges |
+| `9 × 9` texture roughness | Separates rough canopy from smooth surfaces |
+| Directional line response | Detects linear roads and transport corridors |
 
-## 🔬 Mathematical Feature Engineering (8 Dimensions)
+### 3. Random Forest prediction
 
-For every pixel $(x, y)$, the classifier computes 8 complementary spectral, textural, and structural features that provide strong discriminative power across land types:
+The model predicts LandCover.ai labels for all pixels. Those dataset labels are mapped to the application IDs, then optionally refined with a morphological operation. The trained model is loaded lazily and cached after the first request.
 
-| # | Feature Name | Mathematical Definition | Physical Remote Sensing Rationale |
-|:---:|:---|:---|:---|
-| **1** | **$L^*$ (Lightness)** | $L^* = 116 \cdot f(Y/Y_n) - 16$ | Decouples luminance from color, separating bright concrete roofs from dark water/asphalt. |
-| **2** | **$a^*$ (Green–Red Axis)** | $a^* = 500 \cdot [f(X/X_n) - f(Y/Y_n)]$ | Negative values strongly identify chlorophyll-rich vegetation; positive values indicate bare earth or terracotta. |
-| **3** | **$b^*$ (Blue–Yellow Axis)** | $b^* = 200 \cdot [f(Y/Y_n) - f(Z/Z_n)]$ | Negative values capture deep blue water bodies; positive values identify yellow crops and dry sand. |
-| **4** | **Excess Green Index ($ExG$)** | $ExG = \frac{2G - R - B}{255}$ | Robust vegetation index for standard RGB imagery that isolates healthy agricultural crops and tree canopy. |
-| **5** | **Water Absorption Index ($WAI$)** | $WAI = \frac{B - R}{B + R + \epsilon}$ | Exploits the physical property that water strongly reflects blue wavelengths while absorbing red wavelengths. |
-| **6** | **Sobel Edge Gradient** | $\|\nabla I\| = \sqrt{\left(\frac{\partial I}{\partial x}\right)^2 + \left(\frac{\partial I}{\partial y}\right)^2}$ | Detects structural contours, building footprints, and sharp field boundaries. |
-| **7** | **$9 \times 9$ Texture Roughness** | $\sigma = \sqrt{\mathbb{E}[I^2] - (\mathbb{E}[I])^2}$ | Local standard deviation. Differentiates rough canopy (dense forest) from smooth surfaces (water, asphalt). |
-| **8** | **Directional Line Filter** | $R_{\text{line}} = \max(K_H * I, K_V * I, K_{D1} * I, K_{D2} * I)$ | Convolves 4 directional linear kernels to detect roads, highways, and transport corridors. |
+### 4. Statistics and evaluation
 
----
+The service counts pixels in every class and calculates coverage percentages. If a ground-truth mask is supplied, it also returns pixel accuracy, macro precision, macro recall, macro F1, mean IoU, and per-class metrics.
 
-## 🎨 Semantic Land-Cover Classes & Color Palette
+## Requirements
 
-In satellite remote sensing, black masks often lead to confusion between asphalt roads, water bodies, and cloud shadows. To eliminate visual ambiguity, **Roads and Highways are unified into the Yellow class**, grouping all man-made impervious surfaces and bare dry soil together:
+- Python 3.12 or newer
+- The dependencies in `pyproject.toml` or `requirements.txt`
+- A trained model file, unless `MODEL_DOWNLOAD_URL` is configured
 
-| Class ID | Land-Cover Category | Color Code | Hex Value | Semantic Description |
-|:---:|:---|:---:|:---:|:---|
-| **1** | **Dense Forest** | Deep Green | `#006400` | Thick canopy trees, closed woodlands, rough textured vegetation |
-| **2** | **Farm Fields / Pastures** | Light Green | `#22C55E` | Agricultural cropland, meadows, grass, smooth-textured vegetation |
-| **3** | **Water Bodies** | Blue | `#1E90FF` | Rivers, lakes, quarry pits, reservoirs, canals, smooth specular water |
-| **4 / 5** | **Buildings, Roads & Dry Land** | Yellow | `#FFD700` | Concrete roofs, buildings, asphalt roads, highways, and bare dry ground |
-| **6** | **Unclassified** | Grey | `#808080` | Cloud shadows, sensor artifacts, ambiguous transitional edges |
+[`uv`](https://docs.astral.sh/uv/) is recommended because the repository includes `uv.lock`, but standard `pip` is also supported.
 
----
+## Installation
 
-## 📈 Empirical Evaluation & Test Benchmarks
-
-The model was evaluated against **50,000,000 ground-truth pixels** across 200 randomly sampled tiles strictly from the unseen test split (`data/test.txt`):
-
-### Overall Test Metrics
-- **Overall Pixel Accuracy**: **`75.63%`**
-- **Macro Precision**: **`59.48%`**
-- **Macro Recall**: **`68.55%`**
-- **Macro F1-Score**: **`61.41%`**
-- **Mean IoU (mIoU)**: **`46.91%`**
-- **Average Tile Inference Time**: **`167 ms`** (on standard CPU)
-
-### Per-Class Performance Breakdown
-| Land-Cover Class | Precision | Recall | IoU | Test Pixel Support | Key Performance Highlights |
-|:---|:---:|:---:|:---:|:---:|:---|
-| **Farm Fields / Pastures** | **87.54%** | 74.05% | **66.99%** | 30,404,456 | Exceptional precision; strong rejection of non-vegetation. |
-| **Dense Forest** | 69.35% | **80.74%** | **59.50%** | 15,592,280 | High recall; successfully identifies dense canopy tracts. |
-| **Water Bodies** | **74.34%** | 71.98% | **57.66%** | 2,627,343 | Balanced precision/recall using the Water Absorption Index. |
-| **Buildings, Roads & Dry Land** | 47.52% | 53.50% | 33.63% | 1,375,921 | Unified impervious surface detection; zero black noise. |
-
----
-
-## 💻 Software Architecture & User Interface
-
-The repository provides two production-ready interfaces:
-
-### 1. Minimalist Streamlit Web Dashboard (`frontend/app.py`)
-- **Focused Workflow**: Clean single-uploader interface designed strictly for fast classification.
-- **Side-by-Side Visualization**: Instant side-by-side display of the original satellite image vs. the segmented land-cover map.
-- **Coverage Statistics**: Automated calculation of percentage and total pixel counts across all land categories.
-- **Zero Black Noise**: Real-time rendering with the unified 5-class color palette.
-
-### 2. High-Performance FastAPI Backend (`backend/app/main.py`)
-- `POST /classify`: Uploads an image tile (PNG, JPG, TIFF), processes through bilateral filtering and the Random Forest model, and returns base64-encoded segmented masks and coverage statistics.
-- `GET /metrics`: Serves official test-set accuracy, precision, recall, and per-class IoU scores.
-- `GET /health`: Service health check with active configuration details.
-- Interactive Swagger documentation available at `http://127.0.0.1:8000/docs`.
-
----
-
-## 📁 Repository Directory Structure
-
-```
-landclassifier/
-├── backend/                        # FastAPI REST API & Processing Pipeline
-│   └── app/
-│       ├── api/
-│       │   └── routes.py           # REST endpoints (/classify, /metrics, /health)
-│       ├── core/
-│       │   └── config.py           # Class palette, settings, image dimensions
-│       ├── models/
-│       │   ├── model_metrics.json  # Serialized test benchmark scores
-│       │   └── random_forest_landcover.joblib # Trained 100-tree Random Forest weights
-│       ├── processing/
-│       │   ├── labeling.py         # Centroid mapping & heuristic labeling
-│       │   ├── metrics.py          # Area coverage & IoU calculations
-│       │   ├── preprocessing.py    # Bilateral noise filter & LAB color conversion
-│       │   ├── random_forest.py    # 8-feature extraction & RF inference
-│       │   ├── refinement.py       # Morphological median smoothing & RGB mask generation
-│       │   └── segmentation.py     # SimpleKMeans clustering engine
-│       ├── schemas/
-│       │   └── classification.py   # Pydantic request & response schemas
-│       ├── services/
-│       │   └── classifier.py       # High-level classifier orchestration service
-│       └── main.py                 # FastAPI application entry point
-├── frontend/
-│   └── app.py                      # Streamlit interactive web application
-├── data/                           # Dataset Directory (Ignored in Git)
-│   ├── images/                     # 11,366 500x500 PNG satellite orthophoto tiles
-│   ├── masks/                      # 11,366 500x500 PNG ground-truth raster masks
-│   ├── train.txt                   # 9,092 tile IDs (80% training set)
-│   ├── test.txt                    # 2,274 tile IDs (20% test evaluation set)
-│   └── split.py                    # Automatic tiling and train/test partition script
-├── scripts/                        # Model Training, Evaluation & Benchmarking
-│   ├── train_and_evaluate_rf.py    # 100-tree RF training & 50M-pixel test evaluation
-│   ├── train_random_forest.py      # Standalone training script
-│   ├── compare_models.py           # Model comparison utilities
-│   └── export_test_samples.py      # Sample tile extraction tools
-├── tests/                          # Automated Pytest Suite
-│   ├── test_api.py                 # API route & classifier service unit tests
-│   ├── test_preprocessing.py       # Bilateral filter & image ingestion tests
-│   ├── test_processing.py          # Feature extraction tests
-│   ├── test_refinement_metrics.py  # Morphological smoothing & IoU tests
-│   └── test_segmentation.py        # Segmentation engine tests
-├── pyproject.toml                  # Project dependencies & Python package configuration
-├── .gitignore                      # Excludes large models, raw datasets, and caches
-└── README.md                       # Comprehensive Project Documentation
-```
-
----
-
-## 🚀 Quickstart & Setup Guide
-
-### 1. Prerequisites
-- **Python**: Version 3.12 or newer.
-- **Package Manager**: [uv](https://github.com/astral-sh/uv) (recommended for 10-100× faster installs) or standard `pip`.
-
-### 2. Installation
 ```bash
-# Clone the repository
 git clone https://github.com/0xRakkesh/landclassifier.git
 cd landclassifier
-
-# Sync and install all dependencies
 uv sync
 ```
 
-### 3. Launch the Streamlit Web Application
+With `pip`:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+```
+
+On Windows PowerShell, activate the environment with:
+
+```powershell
+.venv\Scripts\Activate.ps1
+```
+
+## Model weights
+
+The model is deliberately excluded from Git because it is a large binary. The classifier expects:
+
+```text
+backend/app/models/random_forest_landcover.joblib
+```
+
+Place the trained file at that path before starting an interface. For hosted deployments, provide a URL through `MODEL_DOWNLOAD_URL`; the service downloads the file on the first inference request:
+
+```bash
+export MODEL_DOWNLOAD_URL="https://example.com/random_forest_landcover.joblib"
+```
+
+The URL should point to a trusted, accessible model artifact. If neither the local file nor the environment variable is available, classification fails with a clear `FileNotFoundError`.
+
+The repository does include the small benchmark file:
+
+```text
+backend/app/models/model_metrics.json
+```
+
+It is used by the user interfaces and the `/metrics` endpoint.
+
+## Running the applications
+
+### Streamlit
+
+Streamlit is the simplest local workflow:
+
 ```bash
 uv run streamlit run frontend/app.py --server.port 8501
 ```
-Open your browser and navigate to **`http://localhost:8501`**. Drag-and-drop any satellite orthophoto tile (from `data/images/` or external aerial photos) and click **Classify Land Cover**.
 
-### 4. Launch the FastAPI Backend Service (Optional)
+Open [http://127.0.0.1:8501](http://127.0.0.1:8501), upload a PNG, JPEG, or TIFF image, and select **Classify Land Cover**. The page shows the processed image, the color mask, inference time, and class coverage.
+
+### Gradio
+
+The root `app.py` provides a second interactive interface:
+
+```bash
+uv run python app.py
+```
+
+It listens on port `7860` and includes example images when the files in `examples/` are present.
+
+### FastAPI
+
+Start the API with:
+
 ```bash
 uv run uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
 ```
-- Interactive API Documentation: **`http://127.0.0.1:8000/docs`**
-- Retrieve Model Benchmarks: `GET http://127.0.0.1:8000/metrics`
-- Submit Image for Inference: `POST http://127.0.0.1:8000/classify`
 
-### 5. Run the Automated Test Suite
+Useful URLs:
+
+- Swagger UI: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+- ReDoc: [http://127.0.0.1:8000/redoc](http://127.0.0.1:8000/redoc)
+- Health check: [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
+- Benchmark metrics: [http://127.0.0.1:8000/metrics](http://127.0.0.1:8000/metrics)
+
+## Using the REST API
+
+### Health check
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+Example response:
+
+```json
+{
+  "status": "ok",
+  "app": "Land Classification System",
+  "version": "2.2.0"
+}
+```
+
+### Classify an image
+
+```bash
+curl -X POST "http://127.0.0.1:8000/classify" \
+  -F "file=@examples/sample_forest_field.png"
+```
+
+The endpoint accepts these query parameters:
+
+| Parameter | Default | Description |
+| --- | ---: | --- |
+| `apply_blur` | `true` | Enable preprocessing blur |
+| `blur_kernel` | `5` | Odd blur kernel size |
+| `use_bilateral` | `true` | Preserve edges during denoising |
+| `refine_mask` | `true` | Apply morphological refinement |
+| `refine_kernel` | `3` | Odd refinement kernel size |
+| `mask_file` | absent | Optional ground-truth mask for live evaluation |
+
+For example:
+
+```bash
+curl -X POST \
+  "http://127.0.0.1:8000/classify?apply_blur=true&blur_kernel=5&use_bilateral=true&refine_mask=true&refine_kernel=3" \
+  -F "file=@examples/sample_roads_urban.png" \
+  -F "mask_file=@path/to/ground-truth-mask.png"
+```
+
+`blur_kernel` and `refine_kernel` must be positive odd integers. The API returns HTTP 400 for even values or empty uploads.
+
+### Response shape
+
+The JSON response contains:
+
+```text
+status
+algorithm
+processing_time_ms
+original_dimensions
+processed_dimensions
+parameters
+cluster_mapping
+classes
+original_image_base64
+segmented_image_base64
+evaluation
+```
+
+The two image fields contain base64-encoded PNG data. Each item in `classes` includes `class_id`, `class_name`, `color_hex`, `color_rgb`, `pixel_count`, and `percentage`. `evaluation.has_ground_truth` is `false` unless a usable mask was supplied or automatically found.
+
+## Understanding the output
+
+The classifier always reports both original and processed dimensions. This distinction matters because a large input image is resized to the configured inference size before feature extraction.
+
+Coverage is calculated as:
+
+```text
+percentage = class_pixel_count / (processed_width × processed_height) × 100
+```
+
+Metrics are percentages rather than fractions. For example, an accuracy of `75.63` means `75.63%`.
+
+When a file name is passed to the service, it also checks the local `data/masks/` directory for a mask with the same base file name. Supplying `mask_file` to the API is more portable and is recommended for deployments.
+
+## Configuration
+
+Application defaults live in `backend/app/core/config.py`:
+
+| Setting | Default |
+| --- | --- |
+| Project name | `Land Classification System` |
+| API version | `2.2.0` |
+| Processing size | `512 × 512` |
+| Maximum image dimension | `16384` |
+| Maximum file size setting | `100 MB` |
+| Supported K-means values | `3`, `5`, `7` |
+
+The service primarily uses the supervised Random Forest path. K-means and heuristic labeling remain available in the processing modules for compatibility and experimentation.
+
+## Evaluation
+
+Offline benchmark values are stored in `backend/app/models/model_metrics.json`. The same values are displayed by the web interfaces and returned by `GET /metrics`.
+
+For a live evaluation, provide a ground-truth mask to `/classify`. The service resizes the mask with nearest-neighbor interpolation, maps LandCover.ai IDs to application IDs, and compares it with the predicted mask.
+
+The repository also contains experiment scripts for training, comparison, inspection, and evaluation under `scripts/`. These scripts may require the original LandCover.ai dataset, which is not committed to the repository.
+
+## Development and testing
+
+Run the test suite with:
+
 ```bash
 uv run pytest
 ```
-All **20 unit tests** verify image loading, bilateral filtering, 8-feature extraction, Random Forest classification, and REST endpoints.
 
----
+The tests cover preprocessing, feature extraction, segmentation, refinement, metrics, and API behavior. To run a focused group:
 
-## 🔮 Engineering Roadmap & Future Extensions
-
-- [x] **In-Place $500 \times 500$ Tiling**: 11,366 PNG tiles with 80/20 train/test split.
-- [x] **Supervised Random Forest Engine**: 100 decision trees trained on 31.2M multi-spectral pixels.
-- [x] **Unified Yellow Palette**: Roads and buildings merged into Yellow (`#FFD700`) to eliminate black artifacts.
-- [x] **Lightweight Git Architecture**: Large `.joblib` binaries and heavy raster datasets purged from Git tracking.
-- [ ] **Connected-Component Geometric Filtering**: Aspect-ratio filtering to prune small circular specks in farm fields.
-- [ ] **Confidence Gating**: Adjustable probability thresholds for high-risk classes.
-- [ ] **Deep Learning Integration (U-Net / SegFormer)**: PyTorch segmentation models for global spatial context reasoning.
-
----
-
-## 📜 License & Citation
-
-This project is licensed under the **MIT License** — feel free to use, modify, and distribute it for academic and commercial applications.
-
-If you use this codebase or dataset preprocessing pipeline in your research, please cite:
-```bibtex
-@misc{landclassifier2026,
-  author = {Rakkesh and Contributors},
-  title = {Satellite Land-Cover Classification System with Supervised Random Forest and Multi-Spectral Feature Engineering},
-  year = {2026},
-  publisher = {GitHub},
-  howpublished = {\url{https://github.com/0xRakkesh/landclassifier}}
-}
+```bash
+uv run pytest tests/test_api.py tests/test_processing.py
 ```
+
+Keep generated datasets, model binaries, caches, and evaluation outputs out of commits. The repository `.gitignore` already excludes those artifacts.
+
+## Repository guide
+
+```text
+landclassifier/
+├── app.py                         # Gradio application
+├── frontend/app.py                # Streamlit application
+├── backend/app/
+│   ├── main.py                    # FastAPI application
+│   ├── api/routes.py              # HTTP endpoints
+│   ├── core/config.py             # Defaults and class palette
+│   ├── schemas/classification.py  # Pydantic response models
+│   ├── services/classifier.py     # End-to-end orchestration
+│   ├── processing/
+│   │   ├── preprocessing.py       # Decode, resize, and denoise
+│   │   ├── random_forest.py       # Feature extraction and RF inference
+│   │   ├── segmentation.py        # K-means segmentation
+│   │   ├── labeling.py            # Cluster-to-class labeling
+│   │   ├── refinement.py          # Mask cleanup and color rendering
+│   │   └── metrics.py             # Area and evaluation metrics
+│   └── models/
+│       └── model_metrics.json     # Offline benchmark metadata
+├── examples/                      # Small demonstration images
+├── scripts/                       # Training and evaluation utilities
+├── tests/                         # Automated tests
+├── docs/                          # Design and project planning documents
+├── pyproject.toml                 # Project metadata and dependencies
+├── requirements.txt               # pip-compatible dependencies
+└── uv.lock                        # Reproducible uv resolution
+```
+
+## Troubleshooting
+
+### `random_forest_landcover.joblib` is missing
+
+Install the model artifact at `backend/app/models/random_forest_landcover.joblib`, or set `MODEL_DOWNLOAD_URL` before starting the application.
+
+### The API rejects a kernel parameter
+
+Both `blur_kernel` and `refine_kernel` must be odd. Use values such as `3`, `5`, or `7`.
+
+### The image is large or slow to process
+
+Inference is performed at `512 × 512`, but decoding a very large source image still consumes memory. Use a smaller tile where possible, and keep source dimensions below the configured maximum.
+
+### The mask colors do not distinguish roads from buildings
+
+This is intentional. Both application classes use `#FFD700` in the final visualization. Inspect `class_id` values in the API response when the distinction is needed programmatically.
+
+## Limitations and roadmap
+
+The classifier is designed for practical, explainable RGB orthophoto classification rather than universal remote-sensing segmentation. Accuracy depends on image resolution, lighting, geography, and similarity to the training data. The current pipeline does not use multispectral satellite bands beyond the information available in the input image.
+
+Potential future improvements include confidence thresholds, connected-component filtering, richer spatial context, additional training data, and deep-learning models such as U-Net or SegFormer.
+
+## License
+
+This project is released under the MIT License. See the repository for the complete license text and attribution details.
