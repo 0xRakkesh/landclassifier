@@ -125,7 +125,7 @@ backend/app/models/random_forest_landcover.joblib
 Place the trained file at that path before starting an interface. For hosted deployments, provide a URL through `MODEL_DOWNLOAD_URL`; the service downloads the file on the first inference request:
 
 ```bash
-export MODEL_DOWNLOAD_URL="https://example.com/random_forest_landcover.joblib"
+export MODEL_DOWNLOAD_URL="https://huggingface.co/spaces/Rakesh0017/satellite-land-classifier/blob/main/backend/app/models/random_forest_landcover.joblib"
 ```
 
 The URL should point to a trusted, accessible model artifact. If neither the local file nor the environment variable is available, classification fails with a clear `FileNotFoundError`.
